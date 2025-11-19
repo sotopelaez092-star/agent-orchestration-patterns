@@ -1,0 +1,679 @@
+"""
+V2: Router 模式 - AI 信息获取助手
+"""
+from typing import Dict
+import logging
+from tools import search_web, call_llm
+from routes import classify_topic
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# 4个处理函数（独立）
+def handle_funding(topic: str, max_results: int = 5) -> Dict:
+    """
+    处理投融资类主题
+    
+    针对性优化：总结时关注融资数据、金额、投资方等关键信息
+    
+    Args:
+        topic: 要查询的主题
+        max_results: 搜索结果数量，默认 5
+    
+    Returns:
+        {
+            "topic": "主题",
+            "summary": "总结内容",
+            "formatted_output": "Markdown 格式的完整报告"
+        }
+    """
+    # 1. 输入验证
+    if not topic or not isinstance(topic, str):
+        raise ValueError("topic 必须是非空字符串")
+    
+    logger.info(f"=" * 60)
+    logger.info(f"开始 Funding 模式处理，主题：{topic}")
+    logger.info(f"=" * 60)
+    
+    # Step 1: 搜索信息
+    logger.info("Step 1: 搜索信息...")
+    search_results = search_web(topic, max_results=max_results)
+
+    if not search_results:
+        logger.error("搜索失败，无法继续")
+        raise RuntimeError("搜索失败")
+    
+    logger.info(f"搜索完成，找到 {len(search_results)} 条结果")
+
+    # step 2: 筛选内容
+    logger.info("\nStep 2: 筛选内容...")
+
+    # 构建搜索结果文件
+    search_text = ""
+    for i, result in enumerate(search_results, 1):
+        search_text += f"{i}. {result['title']}\n"
+        search_text += f"   {result['snippet']}\n\n"
+
+    # 让 LLM 筛选相关内容
+    filter_prompt = f"""
+你是一个信息筛选专家。请分析以下搜索结果，判断哪些内容与主题 "{topic}" 相关。
+
+搜索结果：
+{search_text}
+
+请输出：
+1. 相关的结果编号（如：1, 3, 5）
+2. 简要说明为什么相关
+
+格式：
+相关编号：1, 3, 5
+理由：这些结果直接讨论了该主题的核心内容
+"""
+
+    filter_result = call_llm(filter_prompt, temperature=0.3)
+
+    if not filter_result:
+        logger.warning("筛选失败，使用所有搜索结果")
+        filtered_results = search_results
+    else:
+        logger.info(f"筛选完成：\n{filter_result}")
+        # 这里简化处理，实际应该解析 LLM 返回的编号
+        # 暂时使用所有结果
+        filtered_results = search_results
+    
+    logger.info(f"保留 {len(filtered_results)} 条相关结果")
+   
+    # Step 3: 总结信息
+    logger.info("\nStep 3: 生成摘要...")
+    
+    # 构建用于总结的内容
+    content_for_summary = ""
+    for i, result in enumerate(filtered_results, 1):
+        content_for_summary += f"## 来源 {i}: {result['title']}\n"
+        content_for_summary += f"{result['snippet']}\n"
+        content_for_summary += f"链接：{result['url']}\n\n"
+    
+    # 让 LLM 生成投融资专题摘要
+    summary_prompt = f"""
+你是一个投融资信息分析师。请根据以下内容，生成关于 "{topic}" 的投融资报告。
+
+要求格式（用 Markdown）：
+
+### 💰 核心融资数据
+以表格形式展示关键信息：
+| 公司/项目 | 融资金额 | 轮次 | 投资方 | 时间 |
+|----------|---------|------|--------|------|
+| 示例 | XX亿美元 | X轮 | XXX | 2024-XX |
+
+### 📈 行业趋势分析
+（150-200字，分析行业整体融资趋势、热点领域）
+
+### 🎯 关键洞察
+- 洞察点1
+- 洞察点2  
+- 洞察点3
+
+注意：
+1. 数据要准确（金额、时间）
+2. 如果信息不全，标注"未披露"
+3. 突出最新动态
+
+内容来源：
+{content_for_summary}
+
+请直接输出报告内容，不要有其他废话。
+"""
+    
+    summary = call_llm(summary_prompt, temperature=0.5, max_tokens=1000)
+    
+    if not summary:
+        logger.error("摘要生成失败")
+        raise RuntimeError("无法生成摘要")
+    
+    logger.info("摘要生成完成")
+
+    
+    # Step 4: 格式化输出
+    logger.info("\nStep 4: 格式化输出...")
+    
+    # 生成 Markdown 格式报告
+    formatted_output = f"""# 📊 {topic} - 信息报告
+
+## 📝 核心摘要
+
+{summary}
+
+---
+
+## 📚 详细来源
+
+"""
+    
+    # 添加每个来源的详细信息
+    for i, result in enumerate(filtered_results, 1):
+        formatted_output += f"### {i}. {result['title']}\n\n"
+        formatted_output += f"**摘要**: {result['snippet']}\n\n"
+        formatted_output += f"**链接**: [{result['url']}]({result['url']})\n\n"
+        formatted_output += "---\n\n"
+    
+    # 添加生成时间
+    from datetime import datetime
+    formatted_output += f"\n*报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n"
+    
+    logger.info("格式化完成")
+    logger.info("=" * 60)
+    logger.info("Funding 模式处理完毕！")
+    logger.info("=" * 60)
+    
+    # 返回结果
+    return {
+        "topic": topic,
+        "summary": summary,
+        "formatted_output": formatted_output,
+        "sources": filtered_results
+    }
+
+
+def handle_tech_news(topic: str, max_results: int = 5) -> Dict:
+    """处理技术资讯类主题"""
+    # 1. 输入验证
+    if not topic or not isinstance(topic, str):
+        raise ValueError("topic 必须是非空字符串")
+    
+    logger.info(f"=" * 60)
+    logger.info(f"开始 Tech News 模式处理，主题：{topic}")
+    logger.info(f"=" * 60)
+    
+    # Step 1: 搜索信息
+    logger.info("Step 1: 搜索信息...")
+    search_results = search_web(topic, max_results=max_results)
+
+    if not search_results:
+        logger.error("搜索失败，无法继续")
+        raise RuntimeError("搜索失败")
+    
+    logger.info(f"搜索完成，找到 {len(search_results)} 条结果")
+
+    # step 2: 筛选内容
+    logger.info("\nStep 2: 筛选内容...")
+
+    # 构建搜索结果文件
+    search_text = ""
+    for i, result in enumerate(search_results, 1):
+        search_text += f"{i}. {result['title']}\n"
+        search_text += f"   {result['snippet']}\n\n"
+
+    # 让 LLM 筛选相关内容
+    filter_prompt = f"""
+你是一个信息筛选专家。请分析以下搜索结果，判断哪些内容与主题 "{topic}" 相关。
+
+搜索结果：
+{search_text}
+
+请输出：
+1. 相关的结果编号（如：1, 3, 5）
+2. 简要说明为什么相关
+
+格式：
+相关编号：1, 3, 5
+理由：这些结果直接讨论了该主题的核心内容
+"""
+
+    filter_result = call_llm(filter_prompt, temperature=0.3)
+
+    if not filter_result:
+        logger.warning("筛选失败，使用所有搜索结果")
+        filtered_results = search_results
+    else:
+        logger.info(f"筛选完成：\n{filter_result}")
+        # 这里简化处理，实际应该解析 LLM 返回的编号
+        # 暂时使用所有结果
+        filtered_results = search_results
+    
+    logger.info(f"保留 {len(filtered_results)} 条相关结果")
+   
+    # Step 3: 总结信息
+    logger.info("\nStep 3: 生成摘要...")
+    
+    # 构建用于总结的内容
+    content_for_summary = ""
+    for i, result in enumerate(filtered_results, 1):
+        content_for_summary += f"## 来源 {i}: {result['title']}\n"
+        content_for_summary += f"{result['snippet']}\n"
+        content_for_summary += f"链接：{result['url']}\n\n"
+    
+    # 让 LLM 生成投融资专题摘要
+    summary_prompt = f"""
+你是一个技术资讯分析师。请根据以下内容，生成关于 "{topic}" 的技术资讯报告。
+
+要求格式（用 Markdown）：
+
+### 🔥 热门项目/技术
+以表格形式展示：
+| 项目名称 | Star数 | 技术栈 | 核心特点 | 链接 |
+|---------|--------|--------|---------|------|
+| 示例 | 10k+ | Python | 特点描述 | GitHub链接 |
+
+### 💡 技术亮点
+（150-200字，分析技术创新点、应用场景）
+
+### 🎯 关键洞察
+- 技术趋势1
+- 应用场景2
+- 社区反馈3
+
+注意：
+1. 突出技术特点和创新点
+2. 关注实际应用价值
+3. 如果有 GitHub 数据要准确
+
+内容来源：
+{content_for_summary}
+
+请直接输出报告内容，不要有其他废话。
+"""
+    
+    summary = call_llm(summary_prompt, temperature=0.5, max_tokens=1000)
+    
+    if not summary:
+        logger.error("摘要生成失败")
+        raise RuntimeError("无法生成摘要")
+    
+    logger.info("摘要生成完成")
+
+    
+    # Step 4: 格式化输出
+    logger.info("\nStep 4: 格式化输出...")
+    
+    # 生成 Markdown 格式报告
+    formatted_output = f"""# 📊 {topic} - 信息报告
+
+## 📝 核心摘要
+
+{summary}
+
+---
+
+## 📚 详细来源
+
+"""
+    
+    # 添加每个来源的详细信息
+    for i, result in enumerate(filtered_results, 1):
+        formatted_output += f"### {i}. {result['title']}\n\n"
+        formatted_output += f"**摘要**: {result['snippet']}\n\n"
+        formatted_output += f"**链接**: [{result['url']}]({result['url']})\n\n"
+        formatted_output += "---\n\n"
+    
+    # 添加生成时间
+    from datetime import datetime
+    formatted_output += f"\n*报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n"
+    
+    logger.info("格式化完成")
+    logger.info("=" * 60)
+    logger.info("Tech News 模式处理完毕！")
+    logger.info("=" * 60)
+    
+    # 返回结果
+    return {
+        "topic": topic,
+        "summary": summary,
+        "formatted_output": formatted_output,
+        "sources": filtered_results
+    }
+
+def handle_research(topic: str, max_results: int = 5) -> Dict:
+    """处理学术研究类主题"""
+    # 1. 输入验证
+    if not topic or not isinstance(topic, str):
+        raise ValueError("topic 必须是非空字符串")
+    
+    logger.info(f"=" * 60)
+    logger.info(f"开始 Research 模式处理，主题：{topic}")
+    logger.info(f"=" * 60)
+    
+    # Step 1: 搜索信息
+    logger.info("Step 1: 搜索信息...")
+    search_results = search_web(topic, max_results=max_results)
+
+    if not search_results:
+        logger.error("搜索失败，无法继续")
+        raise RuntimeError("搜索失败")
+    
+    logger.info(f"搜索完成，找到 {len(search_results)} 条结果")
+
+    # step 2: 筛选内容
+    logger.info("\nStep 2: 筛选内容...")
+
+    # 构建搜索结果文件
+    search_text = ""
+    for i, result in enumerate(search_results, 1):
+        search_text += f"{i}. {result['title']}\n"
+        search_text += f"   {result['snippet']}\n\n"
+
+    # 让 LLM 筛选相关内容
+    filter_prompt = f"""
+你是一个信息筛选专家。请分析以下搜索结果，判断哪些内容与主题 "{topic}" 相关。
+
+搜索结果：
+{search_text}
+
+请输出：
+1. 相关的结果编号（如：1, 3, 5）
+2. 简要说明为什么相关
+
+格式：
+相关编号：1, 3, 5
+理由：这些结果直接讨论了该主题的核心内容
+"""
+
+    filter_result = call_llm(filter_prompt, temperature=0.3)
+
+    if not filter_result:
+        logger.warning("筛选失败，使用所有搜索结果")
+        filtered_results = search_results
+    else:
+        logger.info(f"筛选完成：\n{filter_result}")
+        # 这里简化处理，实际应该解析 LLM 返回的编号
+        # 暂时使用所有结果
+        filtered_results = search_results
+    
+    logger.info(f"保留 {len(filtered_results)} 条相关结果")
+   
+    # Step 3: 总结信息
+    logger.info("\nStep 3: 生成摘要...")
+    
+    # 构建用于总结的内容
+    content_for_summary = ""
+    for i, result in enumerate(filtered_results, 1):
+        content_for_summary += f"## 来源 {i}: {result['title']}\n"
+        content_for_summary += f"{result['snippet']}\n"
+        content_for_summary += f"链接：{result['url']}\n\n"
+    
+    # 让 LLM 生成投融资专题摘要
+    summary_prompt = f"""
+你是一个学术研究分析师。请根据以下内容，生成关于 "{topic}" 的研究报告。
+
+要求格式（用 Markdown）：
+
+### 📄 重要论文
+以表格形式展示：
+| 论文标题 | 作者/机构 | 核心创新 | 发表时间 | 链接 |
+|---------|----------|---------|---------|------|
+| 示例 | 作者/机构 | 创新点 | 2024-XX | arXiv链接 |
+
+### 🔬 研究进展
+（150-200字，分析研究方法、实验结果、性能提升）
+
+### 🎯 关键洞察
+- 技术突破1
+- 研究方向2
+- 应用前景3
+
+注意：
+1. 突出学术创新和技术突破
+2. 关注实验数据和性能指标
+3. 说明是否有代码开源
+
+内容来源：
+{content_for_summary}
+
+请直接输出报告内容，不要有其他废话。
+"""
+    
+    summary = call_llm(summary_prompt, temperature=0.5, max_tokens=1000)
+    
+    if not summary:
+        logger.error("摘要生成失败")
+        raise RuntimeError("无法生成摘要")
+    
+    logger.info("摘要生成完成")
+
+    
+    # Step 4: 格式化输出
+    logger.info("\nStep 4: 格式化输出...")
+    
+    # 生成 Markdown 格式报告
+    formatted_output = f"""# 📊 {topic} - 信息报告
+
+## 📝 核心摘要
+
+{summary}
+
+---
+
+## 📚 详细来源
+
+"""
+    
+    # 添加每个来源的详细信息
+    for i, result in enumerate(filtered_results, 1):
+        formatted_output += f"### {i}. {result['title']}\n\n"
+        formatted_output += f"**摘要**: {result['snippet']}\n\n"
+        formatted_output += f"**链接**: [{result['url']}]({result['url']})\n\n"
+        formatted_output += "---\n\n"
+    
+    # 添加生成时间
+    from datetime import datetime
+    formatted_output += f"\n*报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n"
+    
+    logger.info("格式化完成")
+    logger.info("=" * 60)
+    logger.info("Reseach 模式处理完毕！")
+    logger.info("=" * 60)
+    
+    # 返回结果
+    return {
+        "topic": topic,
+        "summary": summary,
+        "formatted_output": formatted_output,
+        "sources": filtered_results
+    } 
+
+def handle_general(topic: str, max_results: int = 5) -> Dict:
+    """
+    Sequential 模式：顺序执行信息获取流程
+    
+    流程：搜索 → 筛选 → 总结 → 格式化
+    
+    Args:
+        topic: 要查询的主题
+        max_results: 搜索结果数量，默认 5
+    
+    Returns:
+        {
+            "topic": "主题",
+            "summary": "总结内容",
+            "formatted_output": "Markdown 格式的完整报告"
+        }
+    
+    Raises:
+        ValueError: 当 topic 为空时
+    """
+    # 1. 输入验证
+    if not topic or not isinstance(topic, str):
+        raise ValueError("topic 必须是非空字符串")
+    
+    logger.info(f"=" * 60)
+    logger.info(f"开始 General 模式处理，主题：{topic}")
+    logger.info(f"=" * 60)
+    
+    # Step 1: 搜索信息
+    logger.info("Step 1: 搜索信息...")
+    search_results = search_web(topic, max_results=max_results)
+
+    if not search_results:
+        logger.error("搜索失败，无法继续")
+        raise RuntimeError("搜索失败")
+    
+    logger.info(f"搜索完成，找到 {len(search_results)} 条结果")
+
+    # step 2: 筛选内容
+    logger.info("\nStep 2: 筛选内容...")
+
+    # 构建搜索结果文件
+    search_text = ""
+    for i, result in enumerate(search_results, 1):
+        search_text += f"{i}. {result['title']}\n"
+        search_text += f"   {result['snippet']}\n\n"
+
+    # 让 LLM 筛选相关内容
+    filter_prompt = f"""
+你是一个信息筛选专家。请分析以下搜索结果，判断哪些内容与主题 "{topic}" 相关。
+
+搜索结果：
+{search_text}
+
+请输出：
+1. 相关的结果编号（如：1, 3, 5）
+2. 简要说明为什么相关
+
+格式：
+相关编号：1, 3, 5
+理由：这些结果直接讨论了该主题的核心内容
+"""
+
+    filter_result = call_llm(filter_prompt, temperature=0.3)
+
+    if not filter_result:
+        logger.warning("筛选失败，使用所有搜索结果")
+        filtered_results = search_results
+    else:
+        logger.info(f"筛选完成：\n{filter_result}")
+        # 这里简化处理，实际应该解析 LLM 返回的编号
+        # 暂时使用所有结果
+        filtered_results = search_results
+    
+    logger.info(f"保留 {len(filtered_results)} 条相关结果")
+   
+    # Step 3: 总结信息
+    logger.info("\nStep 3: 生成摘要...")
+    
+    # 构建用于总结的内容
+    content_for_summary = ""
+    for i, result in enumerate(filtered_results, 1):
+        content_for_summary += f"## 来源 {i}: {result['title']}\n"
+        content_for_summary += f"{result['snippet']}\n"
+        content_for_summary += f"链接：{result['url']}\n\n"
+    
+    # 让 LLM 生成摘要
+    summary_prompt = f"""
+你是一个专业的信息分析师。请根据以下内容，生成关于 "{topic}" 的深度摘要。
+
+要求：
+1. 提取核心要点（3-5个）
+2. 突出最新动态和趋势
+3. 语言简洁专业
+4. 300-500字
+
+内容：
+{content_for_summary}
+
+请直接输出摘要内容，不要有其他废话。
+"""
+    
+    summary = call_llm(summary_prompt, temperature=0.5, max_tokens=1000)
+    
+    if not summary:
+        logger.error("摘要生成失败")
+        raise RuntimeError("无法生成摘要")
+    
+    logger.info("摘要生成完成")
+
+    
+    # Step 4: 格式化输出
+    logger.info("\nStep 4: 格式化输出...")
+    
+    # 生成 Markdown 格式报告
+    formatted_output = f"""# 📊 {topic} - 信息报告
+
+## 📝 核心摘要
+
+{summary}
+
+---
+
+## 📚 详细来源
+
+"""
+    
+    # 添加每个来源的详细信息
+    for i, result in enumerate(filtered_results, 1):
+        formatted_output += f"### {i}. {result['title']}\n\n"
+        formatted_output += f"**摘要**: {result['snippet']}\n\n"
+        formatted_output += f"**链接**: [{result['url']}]({result['url']})\n\n"
+        formatted_output += "---\n\n"
+    
+    # 添加生成时间
+    from datetime import datetime
+    formatted_output += f"\n*报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n"
+    
+    logger.info("格式化完成")
+    logger.info("=" * 60)
+    logger.info("General 模式处理完毕！")
+    logger.info("=" * 60)
+    
+    # 返回结果
+    return {
+        "topic": topic,
+        "summary": summary,
+        "formatted_output": formatted_output,
+        "sources": filtered_results
+    }
+
+# 主路由函数
+def router_info_agent(topic: str, max_results: int = 5) -> Dict:
+    """
+    Router 模式主函数
+    
+    流程：
+    1. 分类主题
+    2. 路由到对应处理函数
+    3. 返回结果
+    
+    Args:
+        topic: 要查询的主题
+        max_results: 搜索结果数量，默认 5
+    
+    Returns:
+        {
+            "topic": "主题",
+            "category": "分类",  # 新增：告诉用户用了哪个分类
+            "summary": "总结内容",
+            "formatted_output": "Markdown 格式的完整报告"
+        }
+    """
+    # 1. 输入验证
+    if not topic or not isinstance(topic, str):
+        raise ValueError("topic 必须是非空字符串")
+
+    # 调用分类器
+    category = classify_topic(topic)
+
+    # 路由逻辑
+    if category == "funding":
+        logger.info(f"路由到 Funding 处理函数，分类: {category}")
+        result = handle_funding(topic, max_results)
+    elif category == "tech_news":
+        logger.info(f"路由到 Tech News 处理函数，分类: {category}")
+        result = handle_tech_news(topic, max_results)
+    elif category == "research":
+        logger.info(f"路由到 Research 处理函数，分类: {category}")
+        result = handle_research(topic, max_results)
+    elif category == "general":  # ← 添加这个
+        logger.info(f"路由到 General 处理函数，分类: {category}")
+        result = handle_general(topic, max_results)
+    else:
+        # 理论上不会到这里（因为 classify_topic 只返回这4种）
+        logger.error(f"未知分类: {category}，使用 General 处理")
+        result = handle_general(topic, max_results)
+        result["category"] = "general"
+    
+    # 添加分类信息到结果
+    result["category"] = category
+    
+    return result
